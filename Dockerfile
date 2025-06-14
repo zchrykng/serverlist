@@ -12,9 +12,12 @@ RUN apk add --no-cache \
 	py3-maxminddb \
 	uwsgi-python3 \
 	uwsgi-http \
-	nodejs
+	nodejs \
+	npm
 
 COPY . .
+
+RUN npm install dot "commander@11.1.0" mkdirp
 
 RUN cd static && ../node_modules/dot/bin/dot-packer -s .
 
