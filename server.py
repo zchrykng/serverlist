@@ -108,7 +108,7 @@ def announce():
 		return "Banned (IP).", 403
 
 	json_data = request.form["json"]
-	if len(json_data) > 8192:
+	if len(json_data) > 11*1024:
 		return "JSON data is too big (%d)." % len(json_data), 413
 
 	try:
