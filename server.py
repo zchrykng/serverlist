@@ -9,7 +9,7 @@ from threading import Thread, RLock
 from glob import glob
 
 import maxminddb
-from flask import Flask, request, send_from_directory, make_response
+from flask import Flask, request, send_file, make_response
 
 LIST_SAVE_INTERVAL = 5
 
@@ -20,14 +20,44 @@ app.config.from_pyfile("config-example.py")  # Use example for defaults
 if os.path.isfile(os.path.join(app.root_path, "config.py")):
 	app.config.from_pyfile("config.py")
 
-tmp = glob(os.path.join(app.root_path, "dbip-country-lite-*.mmdb"))
-if tmp:
-	reader = maxminddb.open_database(tmp[0], maxminddb.MODE_AUTO)
+def config_bool_from_env(name):
+	value = os.environ.get(name)
+	if value is None:
+		return None
+	return value.lower() in ("1", "true", "yes", "on")
+
+if os.environ.get("SERVERLIST_DATA_DIR"):
+	app.config["DATA_DIR"] = os.environ["SERVERLIST_DATA_DIR"]
+if os.environ.get("SERVERLIST_GEOIP_DATABASE"):
+	app.config["GEOIP_DATABASE"] = os.environ["SERVERLIST_GEOIP_DATABASE"]
+
+tmp = config_bool_from_env("SERVERLIST_REJECT_PRIVATE_ADDRESSES")
+if tmp is not None:
+	app.config["REJECT_PRIVATE_ADDRESSES"] = tmp
+
+data_dir = app.config["DATA_DIR"] or app.root_path
+if not os.path.isabs(data_dir):
+	data_dir = os.path.join(app.root_path, data_dir)
+app.config["DATA_DIR"] = data_dir if app.config["DATA_DIR"] else None
+
+geoip_paths = []
+if app.config["GEOIP_DATABASE"]:
+	geoip_path = app.config["GEOIP_DATABASE"]
+	if not os.path.isabs(geoip_path):
+		geoip_path = os.path.join(app.root_path, geoip_path)
+	geoip_paths.append(geoip_path)
+else:
+	geoip_paths.extend(glob(os.path.join(app.root_path, "dbip-country-lite-*.mmdb")))
+	if app.config["DATA_DIR"]:
+		geoip_paths.extend(glob(os.path.join(app.config["DATA_DIR"], "dbip-country-lite-*.mmdb")))
+
+if geoip_paths:
+	reader = maxminddb.open_database(geoip_paths[0], maxminddb.MODE_AUTO)
 else:
 	app.logger.warning(
 		"For working GeoIP download the database from "+
 		"https://db-ip.com/db/download/ip-to-country-lite and place the "+
-		".mmdb file in the app root folder."
+		".mmdb file in the app root or data folder."
 	)
 	reader = None
 
@@ -82,7 +112,7 @@ def index():
 def list_json():
 	# We have to make sure that the list isn't cached for too long,
 	# since it isn't really static.
-	return send_from_directory(app.static_folder, "list.json", max_age=LIST_SAVE_INTERVAL)
+	return send_file(serverList.publicPath, max_age=LIST_SAVE_INTERVAL)
 
 
 @app.route("/geoip")
@@ -643,11 +673,17 @@ class ServerList:
 		self.list = []
 		self.maxServers = 0
 		self.maxClients = 0
-		self.storagePath = os.path.join(app.root_path, "store.json")
-		self.publicPath = os.path.join(app.static_folder, "list.json")
+		if app.config["DATA_DIR"]:
+			self.storagePath = os.path.join(app.config["DATA_DIR"], "store.json")
+			self.publicPath = os.path.join(app.config["DATA_DIR"], "list.json")
+		else:
+			self.storagePath = os.path.join(app.root_path, "store.json")
+			self.publicPath = os.path.join(app.static_folder, "list.json")
 		self.modified = True
 		self.lock = RLock()
 
+		os.makedirs(os.path.dirname(self.storagePath), exist_ok=True)
+		os.makedirs(os.path.dirname(self.publicPath), exist_ok=True)
 		self.load()
 
 	def getWithIndex(self, ip, port):
@@ -805,6 +841,7 @@ class TimerThread(Thread):
 # Globals / Startup
 
 serverList = ServerList()
+serverList.save()
 
 errorTracker = ErrorTracker()
 
